@@ -119,6 +119,16 @@ section.block{margin-bottom:36px;}
 }
 .add-btn:hover,.ghost-btn:hover{background:var(--ink);color:var(--paper);}
 
+/* ---------- Core Block (Weekly Plan 하단) ---------- */
+.core-task-box{border:1px solid var(--line);padding:14px 16px;background:var(--paper-alt);}
+.core-task-title{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:0.06em;color:var(--ink-soft);margin-bottom:10px;font-weight:600;text-transform:uppercase;}
+.core-task-line{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.core-task-line:last-child{margin-bottom:0;}
+.core-task-line .n{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;color:var(--teal);width:16px;flex-shrink:0;}
+.core-task-line input{flex:1;border:none;border-bottom:1px solid var(--line);background:transparent;font-family:'IBM Plex Serif',serif;font-size:14.5px;padding:4px 2px;color:var(--ink);}
+.core-task-line input:focus{outline:none;border-bottom-color:var(--teal);}
+.core-task-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+
 /* ---------- Daily ---------- */
 .day-block{display:grid;grid-template-columns:168px 1fr;border:1px solid var(--line);margin-bottom:-1px;}
 .day-block .idx-col{
@@ -205,6 +215,7 @@ table.gb-table input:focus{outline:none;background:var(--teal-soft);}
   .day-block{grid-template-columns:1fr;}
   .grid2{grid-template-columns:1fr;}
   .factor-grid{grid-template-columns:1fr;}
+  .core-task-grid{grid-template-columns:1fr;}
 }
 </style>
 </head>
@@ -307,10 +318,21 @@ function defaultWeekMeta(){
       {name:'휴식', planned:0, actual:0},
       {name:'친구', planned:0, actual:0}
     ],
+    coreBlocks: ['','',''],
+    expectations: ['',''],
     review: { coreBlock:'', achieved:0, total:5,
       factors:{external:'',physical:'',psychological:'',other:''},
       keyword:'', insight:'', reward:'' }
   };
+}
+function normalizeWeek(w){
+  // 예전 문서(coreBlocks/expectations 없음)도 안전하게 보정
+  const def = defaultWeekMeta();
+  const week = {...def, ...w};
+  if(!week.review) week.review = def.review;
+  if(!Array.isArray(week.coreBlocks) || week.coreBlocks.length!==3) week.coreBlocks = def.coreBlocks;
+  if(!Array.isArray(week.expectations) || week.expectations.length!==2) week.expectations = def.expectations;
+  return week;
 }
 
 /* ============ Firestore read/write ============ */
@@ -326,11 +348,7 @@ async function fetchWeekMeta(ws){
   if (!currentUser) return defaultWeekMeta();
   try{
     const doc = await db.collection('users').doc(currentUser.uid).collection('block6_weeks').doc(ws).get();
-    if (doc.exists){
-      const data = doc.data();
-      if(!data.review) data.review = defaultWeekMeta().review;
-      return data;
-    }
+    if (doc.exists) return normalizeWeek(doc.data());
   }catch(e){ console.error('week load 실패', e); }
   return defaultWeekMeta();
 }
@@ -519,6 +537,18 @@ function renderWeekly(){
       <td><button class="del-btn" onclick="removeCategory(${i})">✕</button></td>
     </tr>`).join('');
 
+  const coreBlockLines = week.coreBlocks.map((v,i)=>`
+    <div class="core-task-line">
+      <span class="n">${i+1}</span>
+      <input type="text" value="${escAttr(v)}" placeholder="이번 주 반드시 지켜낼 블럭" oninput="updateCoreBlockItem(${i},this.value)">
+    </div>`).join('');
+
+  const expectationLines = week.expectations.map((v,i)=>`
+    <div class="core-task-line">
+      <span class="n">${i+1}</span>
+      <input type="text" value="${escAttr(v)}" placeholder="이번 주 기대되는 일" oninput="updateExpectationItem(${i},this.value)">
+    </div>`).join('');
+
   return `
   <div class="view-header">
     <div>
@@ -548,6 +578,20 @@ function renderWeekly(){
       <tbody>${catRows}</tbody>
     </table>
     <button class="add-btn" onclick="addCategory()">+ 카테고리 추가</button>
+  </section>
+
+  <section class="block">
+    <p class="section-label">Step 3 — Core Block 정하기</p>
+    <div class="core-task-grid">
+      <div class="core-task-box">
+        <div class="core-task-title">Core Block / Task</div>
+        ${coreBlockLines}
+      </div>
+      <div class="core-task-box">
+        <div class="core-task-title">이번 주 기대되는 일</div>
+        ${expectationLines}
+      </div>
+    </div>
   </section>
   `;
 }
@@ -579,6 +623,18 @@ function removeCategory(i){
   weekCache[currentWeekStart] = week;
   queueSaveWeek(currentWeekStart);
   render();
+}
+function updateCoreBlockItem(i, val){
+  const week = {...(weekCache[currentWeekStart]||defaultWeekMeta())};
+  week.coreBlocks = [...week.coreBlocks]; week.coreBlocks[i] = val;
+  weekCache[currentWeekStart] = week;
+  queueSaveWeek(currentWeekStart);
+}
+function updateExpectationItem(i, val){
+  const week = {...(weekCache[currentWeekStart]||defaultWeekMeta())};
+  week.expectations = [...week.expectations]; week.expectations[i] = val;
+  weekCache[currentWeekStart] = week;
+  queueSaveWeek(currentWeekStart);
 }
 
 /* ============ DAILY ============ */
@@ -818,8 +874,133 @@ function updateDayFieldFor(date, field, val){
   queueSaveDay(date);
 }
 
+/* ============ NotebookLM 내보내기 ============ */
+async function exportForNotebookLM(){
+  const btn = document.getElementById('exportBtn');
+  const setBtn = (label, disabled)=>{ if(btn){ btn.textContent = label; btn.disabled = !!disabled; } };
+  setBtn('내보내는 중…', true);
+  try{
+    let weekDocs = [];
+    let dayDocs = [];
+
+    if (currentUser){
+      const [weekSnap, daySnap] = await Promise.all([
+        db.collection('users').doc(currentUser.uid).collection('block6_weeks').get(),
+        db.collection('users').doc(currentUser.uid).collection('block6_days').get()
+      ]);
+      weekSnap.forEach(doc=> weekDocs.push({ id: doc.id, data: normalizeWeek(doc.data()) }));
+      daySnap.forEach(doc=> dayDocs.push({ id: doc.id, data: normalizeDay(doc.data()) }));
+    } else {
+      // 로그인 전이라면 지금까지 이 브라우저 탭에서 불러온 항목만 내보냅니다.
+      weekDocs = Object.keys(weekCache).map(id=>({ id, data: weekCache[id] }));
+      dayDocs = Object.keys(dayCache).map(id=>({ id, data: dayCache[id] }));
+    }
+
+    const daysByWeek = {};
+    dayDocs.forEach(rec=>{
+      const ws = fmt(getMonday(parseDate(rec.id)));
+      if(!daysByWeek[ws]) daysByWeek[ws] = [];
+      daysByWeek[ws].push(rec);
+    });
+
+    const allWeekIds = Array.from(new Set([...weekDocs.map(w=>w.id), ...Object.keys(daysByWeek)])).sort();
+
+    let md = `# BLOCK 6 기록 내보내기\n\n`;
+    md += `내보낸 날짜: ${fmt(new Date())}\n`;
+    md += currentUser ? `계정: ${currentUser.email||''}\n\n` : `(로그인 전 · 이 기기에 불러온 항목만 포함됨)\n\n`;
+
+    if (allWeekIds.length === 0){
+      md += `저장된 기록이 아직 없습니다.\n`;
+    }
+
+    allWeekIds.forEach(ws=>{
+      const wRec = weekDocs.find(w=>w.id===ws);
+      const week = wRec ? wRec.data : defaultWeekMeta();
+      const dates = weekDates(ws);
+
+      md += `---\n\n`;
+      md += `## ${ws} 주 (${shortLabel(dates[0])} ~ ${shortLabel(dates[6])})\n\n`;
+
+      md += `### 가용블럭 카테고리\n`;
+      week.categories.forEach(c=>{ md += `- ${c.name}: 계획 ${c.planned} / 실천 ${c.actual}\n`; });
+      md += `\n`;
+
+      md += `### Core Block / Task\n`;
+      const cb = week.coreBlocks.filter(Boolean);
+      if (cb.length) week.coreBlocks.forEach((v,i)=>{ if(v) md += `${i+1}. ${v}\n`; });
+      else md += `(작성 없음)\n`;
+      md += `\n`;
+
+      md += `### 이번 주 기대되는 일\n`;
+      const ex = week.expectations.filter(Boolean);
+      if (ex.length) week.expectations.forEach((v,i)=>{ if(v) md += `${i+1}. ${v}\n`; });
+      else md += `(작성 없음)\n`;
+      md += `\n`;
+
+      const r = week.review;
+      md += `### Weekly Review\n`;
+      md += `- Core Block 달성: ${r.coreBlock || '-'} (${r.achieved}/${r.total})\n`;
+      md += `- 외부 요인: ${r.factors.external || '-'}\n`;
+      md += `- 신체적 요인: ${r.factors.physical || '-'}\n`;
+      md += `- 심리적 요인: ${r.factors.psychological || '-'}\n`;
+      md += `- 기타 요인: ${r.factors.other || '-'}\n`;
+      md += `- 이번 주 키워드: ${r.keyword || '-'}\n`;
+      md += `- 알게 된 점: ${r.insight || '-'}\n`;
+      md += `- 나에게 줄 선물: ${r.reward || '-'}\n\n`;
+
+      md += `### 일별 기록\n\n`;
+      const daysForWeek = (daysByWeek[ws] || []).sort((a,b)=>a.id.localeCompare(b.id));
+      if (daysForWeek.length === 0){
+        md += `(작성된 날짜 없음)\n\n`;
+      } else {
+        daysForWeek.forEach(dRec=>{
+          const day = dRec.data;
+          const dow = DOW_KO[(parseDate(dRec.id).getDay()+6)%7];
+          md += `#### ${dRec.id} (${dow})\n`;
+          day.blocks.forEach((label,i)=>{
+            md += `- Block ${i+1}${label ? ' · ' + label : ''}\n`;
+            (day.plans[i] || []).forEach(p=>{
+              if (p.text) md += `  - [${p.done ? 'x' : ' '}] ${p.text}\n`;
+            });
+            if (day.actions[i]) md += `  - 메모: ${day.actions[i]}\n`;
+          });
+          if (day.memo) md += `- 자유 메모: ${day.memo}\n`;
+          const diaryLines = day.diary.filter(Boolean);
+          if (diaryLines.length) md += `- 세 줄 일기: ${diaryLines.join(' / ')}\n`;
+          if (day.good) md += `- Good: ${day.good}\n`;
+          if (day.bad) md += `- Bad: ${day.bad}\n`;
+          if (day.next) md += `- Next: ${day.next}\n`;
+          md += `\n`;
+        });
+      }
+    });
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `block6_export_${fmt(new Date())}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    flagSaved('내보내기 완료');
+  }catch(e){
+    console.error('내보내기 실패', e);
+    alert('내보내기 중 오류가 발생했습니다: ' + e.message);
+  }finally{
+    setBtn('📄 NotebookLM용으로 내보내기 (.md)', false);
+  }
+}
+
 /* ============ SETTINGS ============ */
 function renderSettings(){
+  const exportSection = `
+    <div class="login-box" style="margin-top:16px;">
+      <p>지금까지 작성한 Weekly Plan · Core Block · Daily · Review 기록을 마크다운(.md) 파일로 내보낼 수 있어요. NotebookLM에 소스로 업로드하면 전체 기록을 바탕으로 정리하거나 질문할 수 있습니다.</p>
+      <button class="ghost-btn" id="exportBtn" onclick="exportForNotebookLM()">📄 NotebookLM용으로 내보내기 (.md)</button>
+    </div>`;
+
   if (currentUser){
     const initial = (currentUser.displayName||currentUser.email||'?').slice(0,1).toUpperCase();
     return `
@@ -837,6 +1018,7 @@ function renderSettings(){
       <p>✅ 거인의 공부와 같은 Google 계정으로 로그인되어 있습니다. 이 기기에서 작성한 내용은 다른 기기에서도 그대로 열립니다.</p>
       <button class="logout-btn" onclick="signOut()">로그아웃</button>
     </div>
+    ${exportSection}
     <p class="meta-note">
       Firestore 컬렉션: <code>users/{uid}/block6_days</code>, <code>users/{uid}/block6_weeks</code><br>
       거인의 공부의 tptRecords / pdrfRecords 등과는 완전히 분리되어 있습니다.
@@ -854,6 +1036,7 @@ function renderSettings(){
       Google 계정으로 로그인
     </button>`}
   </div>
+  ${exportSection}
   <p class="meta-note">로그인 없이도 Weekly / Daily / Review는 계속 사용할 수 있지만, 새로고침하면 내용이 사라집니다.</p>
   `;
 }
