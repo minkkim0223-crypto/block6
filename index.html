@@ -875,9 +875,48 @@ function updateDayFieldFor(date, field, val){
 }
 
 /* ============ NotebookLM 내보내기 ============ */
+function onExportRangeChange(val){
+  const box = document.getElementById('exportCustomRange');
+  if (box) box.style.display = (val === 'custom') ? 'flex' : 'none';
+}
+
+function getExportRange(rangeType){
+  const todayMon = fmt(getMonday(new Date()));
+  if (rangeType === 'thisWeek'){
+    return { start: todayMon, end: addDays(todayMon, 6), label: '이번 주' };
+  }
+  if (rangeType === 'lastWeek'){
+    const s = addDays(todayMon, -7);
+    return { start: s, end: addDays(s, 6), label: '지난 주' };
+  }
+  if (rangeType === 'thisMonth'){
+    const now = new Date();
+    const s = fmt(new Date(now.getFullYear(), now.getMonth(), 1));
+    const e = fmt(new Date(now.getFullYear(), now.getMonth()+1, 0));
+    return { start: s, end: e, label: '이번 달' };
+  }
+  if (rangeType === 'custom'){
+    const s = document.getElementById('exportStart').value;
+    const e = document.getElementById('exportEnd').value;
+    if (!s || !e){ alert('시작일과 종료일을 모두 선택해주세요.'); return null; }
+    if (s > e){ alert('시작일이 종료일보다 늦을 수 없습니다.'); return null; }
+    return { start: s, end: e, label: `${s} ~ ${e}` };
+  }
+  return null; // 'all'
+}
+
 async function exportForNotebookLM(){
   const btn = document.getElementById('exportBtn');
   const setBtn = (label, disabled)=>{ if(btn){ btn.textContent = label; btn.disabled = !!disabled; } };
+
+  const sel = document.getElementById('exportRange');
+  const rangeType = sel ? sel.value : 'all';
+  let range = null;
+  if (rangeType !== 'all'){
+    range = getExportRange(rangeType);
+    if (!range) return; // 유효성 검증 실패(직접 선택 기간 미입력 등) — alert는 getExportRange 내부에서 표시됨
+  }
+
   setBtn('내보내는 중…', true);
   try{
     let weekDocs = [];
@@ -896,6 +935,16 @@ async function exportForNotebookLM(){
       dayDocs = Object.keys(dayCache).map(id=>({ id, data: dayCache[id] }));
     }
 
+    // 기간이 지정되어 있으면 날짜/주 문서를 해당 기간으로 필터링합니다.
+    // (날짜 문자열이 YYYY-MM-DD 형식이라 문자열 비교로도 정확한 대소 비교가 가능합니다)
+    if (range){
+      dayDocs = dayDocs.filter(d => d.id >= range.start && d.id <= range.end);
+      weekDocs = weekDocs.filter(w => {
+        const we = addDays(w.id, 6);
+        return we >= range.start && w.id <= range.end; // 선택한 기간과 겹치는 주만 포함
+      });
+    }
+
     const daysByWeek = {};
     dayDocs.forEach(rec=>{
       const ws = fmt(getMonday(parseDate(rec.id)));
@@ -907,10 +956,11 @@ async function exportForNotebookLM(){
 
     let md = `# BLOCK 6 기록 내보내기\n\n`;
     md += `내보낸 날짜: ${fmt(new Date())}\n`;
+    md += `내보낸 기간: ${range ? (range.label + ' (' + range.start + ' ~ ' + range.end + ')') : '전체 기록'}\n`;
     md += currentUser ? `계정: ${currentUser.email||''}\n\n` : `(로그인 전 · 이 기기에 불러온 항목만 포함됨)\n\n`;
 
     if (allWeekIds.length === 0){
-      md += `저장된 기록이 아직 없습니다.\n`;
+      md += range ? `선택한 기간(${range.label})에 저장된 기록이 없습니다.\n` : `저장된 기록이 아직 없습니다.\n`;
     }
 
     allWeekIds.forEach(ws=>{
@@ -979,7 +1029,8 @@ async function exportForNotebookLM(){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `block6_export_${fmt(new Date())}.md`;
+    const rangeSuffix = range ? ('_' + rangeType) : '_all';
+    a.download = `block6_export${rangeSuffix}_${fmt(new Date())}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -998,6 +1049,21 @@ function renderSettings(){
   const exportSection = `
     <div class="login-box" style="margin-top:16px;">
       <p>지금까지 작성한 Weekly Plan · Core Block · Daily · Review 기록을 마크다운(.md) 파일로 내보낼 수 있어요. NotebookLM에 소스로 업로드하면 전체 기록을 바탕으로 정리하거나 질문할 수 있습니다.</p>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <label style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-soft);">기간</label>
+        <select id="exportRange" onchange="onExportRangeChange(this.value)" style="font-family:'IBM Plex Mono',monospace;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;">
+          <option value="all">전체 기록</option>
+          <option value="thisWeek" selected>이번 주 (월~일)</option>
+          <option value="lastWeek">지난 주</option>
+          <option value="thisMonth">이번 달</option>
+          <option value="custom">직접 선택</option>
+        </select>
+      </div>
+      <div id="exportCustomRange" style="display:none;align-items:center;gap:8px;margin-bottom:12px;">
+        <input type="date" id="exportStart" style="font-family:'IBM Plex Mono',monospace;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ink-faint);">~</span>
+        <input type="date" id="exportEnd" style="font-family:'IBM Plex Mono',monospace;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);">
+      </div>
       <button class="ghost-btn" id="exportBtn" onclick="exportForNotebookLM()">📄 NotebookLM용으로 내보내기 (.md)</button>
     </div>`;
 
